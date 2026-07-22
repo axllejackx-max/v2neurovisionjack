@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Scan Tangan Lucu ✌️</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --green:#00ffa3;
+    --pink:#ff6ec7;
+    --bg:#05060a;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{
+    margin:0; padding:0; width:100%; height:100%;
+    background:var(--bg); overflow:hidden;
+    font-family:'Share Tech Mono', monospace;
+    touch-action:none; overscroll-behavior:none;
+  }
+  video{ display:none; }
+  #canvas{
+    position:fixed; inset:0; width:100%; height:100%; display:block;
+    transition:filter .3s ease;
+  }
+  #canvas.blurred{ filter:blur(20px) brightness(0.85); }
+
+  #statusPill{
+    position:fixed; top:18px; left:50%; transform:translateX(-50%);
+    padding:8px 18px; border-radius:999px;
+    background:rgba(10,12,18,0.55);
+    border:1.5px solid var(--green);
+    color:var(--green);
+    font-family:'Baloo 2', sans-serif; font-weight:700; font-size:13px;
+    letter-spacing:0.3px; white-space:nowrap;
+    z-index:10; pointer-events:none;
+    box-shadow:0 0 10px rgba(0,255,163,0.25);
+  }
+
+  #controls{
+    position:fixed; bottom:26px; left:50%; transform:translateX(-50%);
+    z-index:10; display:flex; gap:12px; align-items:center;
+  }
+  #recBtn{
+    padding:14px 26px; border-radius:999px; border:none; cursor:pointer;
+    font-family:'Baloo 2', sans-serif; font-weight:800; font-size:15px;
+    background:linear-gradient(135deg, var(--pink), var(--green));
+    color:#05060a; letter-spacing:0.5px;
+    box-shadow:0 4px 18px rgba(0,0,0,0.4);
+    transition:transform .12s ease;
+  }
+  #recBtn:active{ transform:scale(0.93); }
+  #recBtn.recording{ background:linear-gradient(135deg, #ff3b3b, #ff8a3b); }
+
+  #recDot{
+    width:10px; height:10px; border-radius:50%; background:#ff3b3b;
+    box-shadow:0 0 8px #ff3b3b; display:none;
+    animation:blink 1s steps(1) infinite;
+  }
+  #recDot.show{ display:block; }
+  @keyframes blink{ 0%,49%{opacity:1;} 50%,100%{opacity:0.15;} }
+
+  #bootOverlay{
+    position:fixed; inset:0; background:var(--bg); z-index:100;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; padding:24px; transition:opacity .5s ease;
+  }
+  #bootOverlay h1{
+    font-family:'Baloo 2', sans-serif; font-weight:800; font-size:clamp(20px,6vw,30px);
+    color:var(--green); margin:0 0 10px; letter-spacing:1px;
+  }
+  #bootOverlay p{
+    color:var(--pink); font-size:13px; max-width:300px; margin:0;
+  }
+  #bootBar{
+    width:min(240px,65vw); height:6px; border-radius:3px; overflow:hidden;
+    background:rgba(255,255,255,0.08); margin-top:18px;
+  }
+  #bootBarFill{
+    height:100%; width:0%; background:linear-gradient(90deg,var(--green),var(--pink));
+    transition:width .25s ease;
+  }
+  #startBtn{
+    margin-top:20px; padding:12px 28px; border-radius:999px; border:none;
+    background:var(--green); color:#05060a; font-family:'Baloo 2',sans-serif;
+    font-weight:800; font-size:14px; display:none; cursor:pointer;
+  }
+  #startBtn:active{ transform:scale(0.94); }
+  #errBox{ color:#ff6b6b; font-size:12px; margin-top:12px; max-width:300px; display:none; }
+</style>
+</head>
+<body>
+
+<video id="video" playsinline autoplay muted></video>
+<canvas id="canvas"></canvas>
+
+<div id="statusPill">👀 Nunggu tangan kamu...</div>
+
+<div id="controls">
+  <div id="recDot"></div>
+  <button id="recBtn">⏺ Rekam</button>
+</div>
+
+<div id="bootOverlay">
+  <h1>✌️ Scan Tangan Lucu</h1>
+  <p id="bootMsg">Lagi manggil AI-nya dulu ya~ 🤖</p>
+  <div id="bootBar"><div id="bootBarFill"></div></div>
+  <button id="startBtn">AKTIFKAN KAMERA</button>
+  <div id="errBox"></div>
+</div>
+
+<script type="module">
+import {
+  FilesetResolver,
+  HandLandmarker
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', { willReadFrequently:true });
+
+const bootOverlay = document.getElementById('bootOverlay');
+const bootMsg = document.getElementById('bootMsg');
+const bootBarFill = document.getElementById('bootBarFill');
+const startBtn = document.getElementById('startBtn');
+const errBox = document.getElementById('errBox');
+const statusPill = document.getElementById('statusPill');
+const recBtn = document.getElementById('recBtn');
+const recDot = document.getElementById('recDot');
+
+let handLandmarker = null;
+let currentBox = null;
+let victoryStartTime = null;
+let lastVictorySeen = 0;
+let blurActive = false;
+
+let mediaRecorder = null;
+let recordedChunks = [];
+let recording = false;
+
+const HAND_CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],
+  [13,17],[17,18],[18,19],[19,20],[0,17]
+];
+
+/* ---------- boot ---------- */
+function setBootProgress(pct, msg){
+  bootBarFill.style.width = pct + '%';
+  if(msg) bootMsg.textContent = msg;
+}
+
+async function initModel(){
+  setBootProgress(20, 'Memuat runtime AI...');
+  const vision = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+  );
+  setBootProgress(60, 'Memuat model deteksi tangan...');
+  handLandmarker = await HandLandmarker.createFromOptions(vision, {
+    baseOptions:{
+      modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+      delegate:"GPU"
+    },
+    runningMode:"VIDEO",
+    numHands:2,
+    minHandDetectionConfidence:0.5,
+    minHandPresenceConfidence:0.5,
+    minTrackingConfidence:0.5
+  });
+  setBootProgress(100, 'Siap gaskeun!');
+}
+
+async function startCamera(){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:"user", width:{ideal:960}, height:{ideal:540}, frameRate:{ideal:30} },
+      audio:false
+    });
+    video.srcObject = stream;
+    await new Promise(resolve=>{
+      video.onloadedmetadata = ()=>{ video.play(); resolve(); };
+    });
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    bootOverlay.style.opacity = '0';
+    setTimeout(()=> bootOverlay.style.display='none', 550);
+    requestAnimationFrame(loop);
+  }catch(err){
+    errBox.style.display = 'block';
+    errBox.textContent = 'Gagal mengakses kamera: ' + err.message + ' — cek izin kamera browser kamu ya.';
+    startBtn.style.display = 'inline-block';
+    startBtn.textContent = 'COBA LAGI';
+  }
+}
+
+async function boot(){
+  try{
+    await initModel();
+    startBtn.style.display = 'inline-block';
+    startBtn.textContent = 'AKTIFKAN KAMERA';
+    bootMsg.textContent = 'Udah siap, tinggal pencet tombolnya~';
+  }catch(err){
+    errBox.style.display = 'block';
+    errBox.textContent = 'Gagal memuat model AI: ' + err.message;
+    startBtn.style.display = 'inline-block';
+    startBtn.textContent = 'COBA LAGI';
+  }
+}
+startBtn.addEventListener('click', ()=>{
+  startBtn.style.display = 'none';
+  errBox.style.display = 'none';
+  startCamera();
+});
+boot();
+
+/* ---------- gesture math ---------- */
+function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+function fingerExtended(lm, tip, pip, mcp){
+  const dTip = dist(lm[0], lm[tip]);
+  const dPip = dist(lm[0], lm[pip]);
+  const dMcp = dist(lm[0], lm[mcp]);
+  return dTip > dPip*1.05 && dTip > dMcp*1.15;
+}
+function thumbExtended(lm){
+  return dist(lm[4], lm[5]) > dist(lm[3], lm[5]);
+}
+function angleBetween(v1,v2){
+  const dot = v1.x*v2.x + v1.y*v2.y;
+  const m1 = Math.hypot(v1.x,v1.y), m2 = Math.hypot(v2.x,v2.y);
+  if(m1===0||m2===0) return 0;
+  let c = Math.max(-1, Math.min(1, dot/(m1*m2)));
+  return Math.acos(c) * 180/Math.PI;
+}
+function isVictory(lm){
+  const idx = fingerExtended(lm,8,6,5);
+  const mid = fingerExtended(lm,12,10,9);
+  const ring = fingerExtended(lm,16,14,13);
+  const pinky = fingerExtended(lm,20,18,17);
+  return idx && mid && !ring && !pinky;
+}
+function isLShape(lm){
+  const idx = fingerExtended(lm,8,6,5);
+  const mid = fingerExtended(lm,12,10,9);
+  const ring = fingerExtended(lm,16,14,13);
+  const pinky = fingerExtended(lm,20,18,17);
+  const thumb = thumbExtended(lm);
+  if(!(thumb && idx && !mid && !ring && !pinky)) return false;
+  const v1 = {x: lm[4].x-lm[2].x, y: lm[4].y-lm[2].y};
+  const v2 = {x: lm[8].x-lm[5].x, y: lm[8].y-lm[5].y};
+  const ang = angleBetween(v1,v2);
+  return ang > 55 && ang < 130;
+}
+
+function mx(xNorm){ return (1 - xNorm) * canvas.width; }
+function my(yNorm){ return yNorm * canvas.height; }
+
+/* ---------- grayscale box effect ---------- */
+function applyGrayscaleBox(box){
+  const x = Math.max(0, Math.round(box.x));
+  const y = Math.max(0, Math.round(box.y));
+  const w = Math.min(canvas.width - x, Math.round(box.w));
+  const h = Math.min(canvas.height - y, Math.round(box.h));
+  if(w <= 2 || h <= 2) return;
+  let imgData;
+  try{ imgData = ctx.getImageData(x,y,w,h); } catch(e){ return; }
+  const d = imgData.data;
+  for(let i=0;i<d.length;i+=4){
+    const avg = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+    d[i]=avg; d[i+1]=avg; d[i+2]=avg;
+  }
+  ctx.putImageData(imgData, x, y);
+  ctx.save();
+  ctx.strokeStyle = '#00ffa3';
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = '#00ffa3';
+  ctx.shadowBlur = 6;
+  ctx.strokeRect(x,y,w,h);
+  ctx.restore();
+}
+
+/* ---------- recording ---------- */
+recBtn.addEventListener('click', ()=>{
+  if(!recording){
+    try{
+      const stream = canvas.captureStream(30);
+      let mimeType = 'video/webm;codecs=vp9';
+      if(!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm;codecs=vp8';
+      if(!MediaRecorder.isTypeSupported(mimeType)) mimeType = 'video/webm';
+      mediaRecorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2500000 });
+      recordedChunks = [];
+      mediaRecorder.ondataavailable = (e)=>{ if(e.data.size>0) recordedChunks.push(e.data); };
+      mediaRecorder.onstop = ()=>{
+        const blob = new Blob(recordedChunks, { type:'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'scan-rekaman-' + Date.now() + '.webm';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(()=> URL.revokeObjectURL(url), 3000);
+      };
+      mediaRecorder.start();
+      recording = true;
+      recBtn.textContent = '⏹ Stop';
+      recBtn.classList.add('recording');
+      recDot.classList.add('show');
+    }catch(err){
+      alert('Gagal mulai rekam: ' + err.message);
+    }
+  } else {
+    mediaRecorder.stop();
+    recording = false;
+    recBtn.textContent = '⏺ Rekam';
+    recBtn.classList.remove('recording');
+    recDot.classList.remove('show');
+  }
+});
+
+/* ---------- main loop ---------- */
+function loop(){
+  if(video.readyState >= 2 && handLandmarker){
+    const nowMs = performance.now();
+
+    ctx.save();
+    ctx.scale(-1,1);
+    ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+    ctx.restore();
+
+    let handResults = null;
+    try{ handResults = handLandmarker.detectForVideo(video, nowMs); }catch(e){}
+    const hands = (handResults && handResults.landmarks) ? handResults.landmarks : [];
+
+    let anyVictory = false;
+    const lHands = [];
+    for(const lm of hands){
+      if(isVictory(lm)) anyVictory = true;
+      if(isLShape(lm)) lHands.push(lm);
+    }
+
+    // victory -> blur state machine
+    if(anyVictory){
+      if(!victoryStartTime) victoryStartTime = nowMs;
+      lastVictorySeen = nowMs;
+    }
+    if(victoryStartTime && (nowMs - lastVictorySeen) < 300){
+      blurActive = (nowMs - victoryStartTime) > 150;
+    } else {
+      blurActive = false;
+      victoryStartTime = null;
+    }
+    canvas.classList.toggle('blurred', blurActive);
+
+    // two-hand L frame -> grayscale box
+    if(!blurActive && lHands.length === 2){
+      const pts = [ lHands[0][4], lHands[0][8], lHands[1][4], lHands[1][8] ]
+        .map(p=>({x:mx(p.x), y:my(p.y)}));
+      const xs = pts.map(p=>p.x), ys = pts.map(p=>p.y);
+      const target = {
+        x: Math.min(...xs), y: Math.min(...ys),
+        w: Math.max(...xs)-Math.min(...xs),
+        h: Math.max(...ys)-Math.min(...ys)
+      };
+      if(!currentBox) currentBox = {...target};
+      else{
+        currentBox.x += (target.x-currentBox.x)*0.3;
+        currentBox.y += (target.y-currentBox.y)*0.3;
+        currentBox.w += (target.w-currentBox.w)*0.3;
+        currentBox.h += (target.h-currentBox.h)*0.3;
+      }
+      if(currentBox.w > 20 && currentBox.h > 20) applyGrayscaleBox(currentBox);
+    } else {
+      currentBox = null;
+    }
+
+    // status pill (cheap text update)
+    if(blurActive) statusPill.textContent = '😆 Ngeblur nih~';
+    else if(lHands.length === 2) statusPill.textContent = '🖼️ Frame kedetect!';
+    else if(hands.length > 0) statusPill.textContent = '✋ Coba bentuk L atau ✌️';
+    else statusPill.textContent = '👀 Nunggu tangan kamu...';
+  }
+
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('beforeunload', ()=>{
+  if(video.srcObject){ video.srcObject.getTracks().forEach(tr=>tr.stop()); }
+  if(mediaRecorder && recording) mediaRecorder.stop();
+});
+</script>
+</body>
+</html>
